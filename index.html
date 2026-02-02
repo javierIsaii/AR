@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Aura Sphere AR - Advanced Effects</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            touch-action: none;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+        }
+        /* Glassmorphism UI */
+        .glass {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(22px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        @keyframes pulse-soft {
+            0%, 100% { opacity: 0.8; transform: scale(1); }
+            50% { opacity: 1; transform: scale(1.05); }
+        }
+        .animate-pulse-soft {
+            animation: pulse-soft 2s infinite ease-in-out;
+        }
+        /* Mobile adjustments */
+        @media (max-width: 640px) {
+            .ui-header { padding: 1.8rem; }
+            .ui-title { font-size: 1.2rem; }
+            .ui-instructions { bottom: 2rem; width: 90%; }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="app" class="relative w-full h-screen overflow-hidden select-none">
+        <video id="input_video" class="hidden" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+
+        <!-- Header UI -->
+        <div class="ui-header absolute top-0 left-0 w-full p-8 z-20 pointer-events-none flex justify-between items-start">
+            <div>
+                <h1 class="ui-title text-4xl font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600">
+                    AURA CORE
+                </h1>
+                <p class="text-[10px] sm:text-xs uppercase tracking-[0.3em] text-cyan-400/70 font-bold">Quantum Hand Tracking v2.0</p>
+            </div>
+            
+            <button id="toggle-help" class="pointer-events-auto glass px-5 py-2.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all hover:bg-white/10 active:scale-95 text-white">
+                AYUDA
+            </button>
+        </div>
+
+        <!-- Pantalla de Carga -->
+        <div id="loader" class="absolute inset-0 flex flex-col items-center justify-center bg-black z-50 transition-opacity duration-1000">
+            <div class="relative w-24 h-24 mb-8">
+                <div class="absolute inset-0 border-4 border-cyan-500/20 rounded-full"></div>
+                <div class="absolute inset-0 border-4 border-t-cyan-500 rounded-full animate-spin"></div>
+                <div class="absolute inset-4 border-2 border-purple-500/20 rounded-full"></div>
+                <div class="absolute inset-4 border-2 border-b-purple-500 rounded-full animate-spin [animation-duration:1.5s]"></div>
+            </div>
+            <p class="animate-pulse text-sm tracking-[0.4em] font-black text-white">SINCRONIZANDO AURA...</p>
+        </div>
+
+        <!-- Instrucciones -->
+        <div id="instructions" class="ui-instructions absolute bottom-12 left-1/2 -translate-x-1/2 z-30 w-full max-w-sm px-6 transition-all duration-700">
+            <div class="glass rounded-[2.5rem] p-8 shadow-2xl">
+                <h2 class="text-xl font-bold mb-6 text-white text-center tracking-tight">Vínculo de Energía</h2>
+                <div class="space-y-5 text-sm text-gray-300">
+                    <div class="flex items-center gap-5">
+                        <div class="w-12 h-12 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-xl">☝️</div>
+                        <p>La esfera seguirá <strong>exclusivamente</strong> la punta de tu dedo índice.</p>
+                    </div>
+                    <div class="flex items-center gap-5">
+                        <div class="w-12 h-12 rounded-2xl bg-purple-500/10 border border-purple-500/30 flex items-center justify-center text-xl">✊</div>
+                        <p>Cierra el puño para <strong>comprimir</strong> y sobrecargar el núcleo.</p>
+                    </div>
+                </div>
+                <button id="btn-start" class="w-full mt-8 py-4 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-2xl font-black text-xs tracking-[0.2em] uppercase hover:brightness-110 active:scale-95 transition-all shadow-xl shadow-cyan-500/20 text-white">
+                    INICIAR SECUENCIA
+                </button>
+            </div>
+        </div>
+
+        <!-- Status -->
+        <div id="status-indicator" class="absolute top-20 right-6 flex items-center gap-3 glass px-5 py-2.5 rounded-full">
+            <div id="status-dot" class="w-2.5 h-2.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div>
+            <span class="text-[10px] font-black uppercase tracking-widest text-gray-400">OFFLINE</span>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const loader = document.getElementById('loader');
+        const instructions = document.getElementById('instructions');
+        const btnStart = document.getElementById('btn-start');
+        const btnHelp = document.getElementById('toggle-help');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.querySelector('#status-indicator span');
+
+        // Partículas de energía
+        const particles = [];
+        const MAX_PARTICLES = 30;
+
+        function createParticle(x, y, isClosed) {
+            return {
+                x, y,
+                vx: (Math.random() - 0.5) * 10,
+                vy: (Math.random() - 0.5) * 10,
+                life: 1.0,
+                size: Math.random() * 3 + 1,
+                color: isClosed ? '255, 0, 255' : '0, 255, 255'
+            };
+        }
+
+        function resize() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        btnStart.addEventListener('click', () => {
+            instructions.classList.add('opacity-0', 'translate-y-10', 'pointer-events-none');
+        });
+
+        btnHelp.addEventListener('click', () => {
+            instructions.classList.toggle('opacity-0');
+            instructions.classList.toggle('translate-y-10');
+            instructions.classList.toggle('pointer-events-none');
+        });
+
+        function drawEnergySphere(landmarks) {
+            const indexTip = landmarks[8]; // Seguimiento exclusivo dedo índice
+            const wrist = landmarks[0];
+            const middleBase = landmarks[9];
+
+            let centerX = indexTip.x * canvasElement.width;
+            let centerY = indexTip.y * canvasElement.height;
+
+            // Detección de mano cerrada
+            const fingerTips = [8, 12, 16, 20];
+            const avgDist = fingerTips.reduce((acc, tipIdx) => {
+                const tip = landmarks[tipIdx];
+                const d = Math.sqrt(Math.pow(tip.x - wrist.x, 2) + Math.pow(tip.y - wrist.y, 2));
+                return acc + d;
+            }, 0) / 4;
+            const isClosed = avgDist < 0.25;
+
+            // Efecto de vibración si está cerrado
+            if (isClosed) {
+                centerX += (Math.random() - 0.5) * 4;
+                centerY += (Math.random() - 0.5) * 4;
+            }
+
+            // Escala por proximidad
+            const handScale = Math.sqrt(Math.pow(middleBase.x - wrist.x, 2) + Math.pow(middleBase.y - wrist.y, 2));
+            const baseRadius = handScale * (window.innerWidth < 640 ? 500 : 450);
+            const targetRadius = isClosed ? baseRadius * 0.55 : baseRadius;
+            
+            const time = Date.now() * 0.005;
+            const pulse = Math.sin(time * 3) * (isClosed ? 12 : 5);
+            const radius = Math.max(15, targetRadius + pulse);
+
+            // Gestionar partículas
+            if (particles.length < MAX_PARTICLES && Math.random() > 0.5) {
+                particles.push(createParticle(centerX, centerY, isClosed));
+            }
+
+            canvasCtx.save();
+            
+            // Dibujar Partículas
+            particles.forEach((p, i) => {
+                p.x += p.vx;
+                p.y += p.vy;
+                p.life -= 0.02;
+                if (p.life <= 0) {
+                    particles.splice(i, 1);
+                    return;
+                }
+                canvasCtx.fillStyle = `rgba(${p.color}, ${p.life})`;
+                canvasCtx.beginPath();
+                canvasCtx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+                canvasCtx.fill();
+            });
+
+            // 1. Aura Exterior Dinámica (Resplandor volumétrico)
+            const outerGlow = canvasCtx.createRadialGradient(centerX, centerY, radius * 0.5, centerX, centerY, radius * 3.5);
+            const hue = isClosed ? '280, 0%, 100%' : '180, 100%, 50%';
+            outerGlow.addColorStop(0, isClosed ? 'rgba(255, 0, 255, 0.4)' : 'rgba(0, 255, 255, 0.2)');
+            outerGlow.addColorStop(0.5, isClosed ? 'rgba(120, 0, 255, 0.1)' : 'rgba(0, 100, 255, 0.05)');
+            outerGlow.addColorStop(1, 'transparent');
+            
+            canvasCtx.fillStyle = outerGlow;
+            canvasCtx.beginPath();
+            canvasCtx.arc(centerX, centerY, radius * 3.5, 0, Math.PI * 2);
+            canvasCtx.fill();
+
+            // 2. Anillos Orbitantes
+            canvasCtx.lineWidth = isClosed ? 3 : 1.5;
+            canvasCtx.strokeStyle = isClosed ? '#ff77ff' : '#77ffff';
+            for (let i = 0; i < 2; i++) {
+                const rot = time * (i === 0 ? 1 : -1.5);
+                canvasCtx.beginPath();
+                canvasCtx.ellipse(centerX, centerY, radius * 1.2, radius * 0.4, rot, 0, Math.PI * 2);
+                canvasCtx.stroke();
+            }
+
+            // 3. Núcleo Sólido e Intenso
+            canvasCtx.shadowBlur = isClosed ? 80 : 40;
+            canvasCtx.shadowColor = isClosed ? '#ff00ff' : '#00ffff';
+            
+            const coreGradient = canvasCtx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+            coreGradient.addColorStop(0, '#ffffff');
+            coreGradient.addColorStop(0.2, isClosed ? '#ff00ff' : '#00ffff');
+            coreGradient.addColorStop(0.8, isClosed ? 'rgba(100, 0, 150, 0.8)' : 'rgba(0, 100, 150, 0.8)');
+            coreGradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+
+            canvasCtx.fillStyle = coreGradient;
+            canvasCtx.beginPath();
+            canvasCtx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+            canvasCtx.fill();
+
+            // 4. Destello central (Flare)
+            canvasCtx.fillStyle = 'white';
+            canvasCtx.globalAlpha = 0.8;
+            canvasCtx.beginPath();
+            canvasCtx.arc(centerX, centerY, radius * 0.15, 0, Math.PI * 2);
+            canvasCtx.fill();
+
+            canvasCtx.restore();
+        }
+
+        function onResults(results) {
+            if (loader.style.opacity !== '0') {
+                loader.style.opacity = '0';
+                setTimeout(() => loader.style.display = 'none', 1000);
+                statusDot.classList.replace('bg-red-500', 'bg-cyan-500');
+                statusDot.classList.add('shadow-[0_0_10px_#06b6d4]');
+                statusText.innerText = 'SISTEMA: ACTIVO';
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Dibujar espejo de cámara con corrección de aspecto
+            canvasCtx.translate(canvasElement.width, 0);
+            canvasCtx.scale(-1, 1);
+            
+            // Calculamos proporciones para cubrir el canvas (similar a object-fit: cover)
+            const canvasAspect = canvasElement.width / canvasElement.height;
+            const videoAspect = results.image.width / results.image.height;
+            let drawW, drawH, offsetW, offsetH;
+
+            if (canvasAspect > videoAspect) {
+                drawW = canvasElement.width;
+                drawH = drawW / videoAspect;
+                offsetW = 0;
+                offsetH = (canvasElement.height - drawH) / 2;
+            } else {
+                drawH = canvasElement.height;
+                drawW = drawH * videoAspect;
+                offsetH = 0;
+                offsetW = (canvasElement.width - drawW) / 2;
+            }
+
+            canvasCtx.drawImage(results.image, offsetW, offsetH, drawW, drawH);
+            canvasCtx.restore();
+
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    // Ajustamos coordenadas para que coincidan con el dibujo centrado (cover)
+                    const adjustedLandmarks = landmarks.map(l => {
+                        let x = 1 - l.x; // Espejo
+                        let realX = x * drawW + offsetW;
+                        let realY = l.y * drawH + offsetH;
+                        return { x: realX / canvasElement.width, y: realY / canvasElement.height };
+                    });
+                    drawEnergySphere(adjustedLandmarks);
+                }
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: window.innerWidth > 1024 ? 1280 : 640,
+            height: window.innerWidth > 1024 ? 720 : 480
+        });
+        
+        camera.start().catch(err => {
+            loader.style.display = 'none';
+            document.getElementById('app').innerHTML += `
+                <div class="absolute inset-0 flex items-center justify-center bg-black/90 z-[60] text-center p-10">
+                    <div>
+                        <p class="text-red-500 font-bold mb-4">Error de Hardware: Cámara no detectada.</p>
+                        <button onclick="location.reload()" class="px-8 py-3 bg-white text-black font-black rounded-xl">REINTENTAR</button>
+                    </div>
+                </div>
+            `;
+        });
+    </script>
+</body>
+</html>
